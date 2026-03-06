@@ -6,7 +6,9 @@ from ssg.ssg_main import edges
 import matplotlib.pyplot as plt
 import time
 import torch
+import os
 import networkx as nx
+import cv2
 
 def main(cfg):
     rgb_dir_path = cfg.rgb_dir
@@ -36,11 +38,17 @@ def main(cfg):
     gpu_usage = {'yolo': [], 'edges': []}
     cuda_available = torch.cuda.is_available()
 
+
     # 1) cache the depths (also initializes YOLOE.utils global DEPTH_PATHS)
     depth_paths = yutils.list_png_paths(depth_folder)
     depth_cache = {}
     for dp in depth_paths:
         depth_cache[dp] = yutils.load_depth_as_meters(dp)
+
+    image_graphs = []
+    graph_path = cfg.get("graph_path")
+
+    
 
     # 2) Load camera poses (camera->world)
     poses = yutils.load_camera_poses(traj_path)
@@ -81,13 +89,14 @@ def main(cfg):
             alpha=float(cfg.alpha),
             fast=cfg.fast_mask,
         )
-
+        print("*******", len(masks_clean), len(yl_res))
         t_preprocess_end = time.perf_counter()
         timings['preprocess'].append((t_preprocess_end - t_preprocess_start) * 1000)  # ms
 
         # track ids and class names from YOLO
         track_ids = None
         class_names = None
+        boxes = yl_res.boxes.cpu().numpy()
         if hasattr(yl_res, 'boxes') and yl_res.boxes is not None:
             # Get track IDs
             if getattr(yl_res.boxes, 'id', None) is not None:
@@ -99,9 +108,11 @@ def main(cfg):
             # Get class names if available
             if getattr(yl_res.boxes, 'cls', None) is not None and hasattr(yl_res, 'names'):
                 try:
+                    print("class available")
                     cls_ids = yl_res.boxes.cls.detach().cpu().numpy().astype(np.int64)
                     class_names = [yl_res.names[int(c)] for c in cls_ids]
                 except Exception:
+                    print("class names error")
                     pass
         
         if track_ids is None:
@@ -117,7 +128,7 @@ def main(cfg):
         # PCDs are stored in registry for reconstruction
         t_create3d_start = time.perf_counter()
         frame_objs, current_graph = yutils.create_3d_objects_with_tracking(
-            track_ids, 
+            track_ids,
             masks_clean, 
             max_points_per_obj, 
             depth_m, 
@@ -126,7 +137,8 @@ def main(cfg):
             o3_nb_neighbors=cfg.o3_nb_neighbors,
             o3std_ratio=cfg.o3std_ratio,
             object_registry=object_registry,
-            class_names=class_names
+            class_names=class_names,
+            yolo_res=boxes
         )
         t_create3d_end = time.perf_counter()
         timings['create_3d'].append((t_create3d_end - t_create3d_start) * 1000)  # ms
@@ -148,9 +160,12 @@ def main(cfg):
         # Edge predictor SceneVerse (uses lightweight bbox objects)
         t_edges_start = time.perf_counter()
         edges(current_graph, frame_objs, T_w_c, depth_m)
+        image_graphs.append(current_graph)
         t_edges_end = time.perf_counter()
         timings['edges'].append((t_edges_end - t_edges_start) * 1000)  # ms
-        
+
+        #print(current_graph.__dict__, current_graph)
+        #print(current_graph.edges)
         # GPU usage after edges (if available)
         if cuda_available:
             torch.cuda.synchronize()
@@ -196,8 +211,11 @@ def main(cfg):
 
             
         frame_idx += 1
+    
         
         # return 0
+    image_files = [f for f in os.listdir(rgb_dir_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
+    yutils.save_graphs_json(image_graphs, image_files, graph_path)
 
     # Print tracking summary
     print("\n" + "="*60)
@@ -246,17 +264,18 @@ def main(cfg):
 
 if __name__ == "__main__":
     cfg = OmegaConf.create({
-        'rgb_dir': "/home/maribjonov_mr/IsaacSim_bench/scene_7/rgb",
-        'depth_dir': "/home/maribjonov_mr/IsaacSim_bench/scene_7/depth",
-        'traj_path': "/home/maribjonov_mr/IsaacSim_bench/scene_7/traj.txt",
-        'yolo_model': '/home/maribjonov_mr/yolo_bench/yoloe-11l-seg-pf.pt',
-        'conf': 0.25,
+        'rgb_dir': "/home/amelekhin96/pinkin_ek/data/sber/map8/zedx_front_left/rgb",
+        'depth_dir': "/home/amelekhin96/pinkin_ek/data/sber_depth_resized/map8",
+        'traj_path': "/home/amelekhin96/pinkin_ek/data/sber/map8/traj.txt",
+        'yolo_model': "/home/amelekhin96/pinkin_ek/yolo_ssgg/yoloe-11l-seg-pf.pt",
+        'graph_path': "/home/amelekhin96/pinkin_ek/data/sber/map8/graphs",
+        'conf': 0.2,
         'iou': 0.5,
         'kernel_size': 17,
         'alpha': 0.7,
         'max_points_per_obj': 2000,
         'max_accumulated_points': 10000,
-        'show_pcds': True,
+        'show_pcds': False,
         'fast_mask': True,
         'o3_nb_neighbors': 50,
         'o3std_ratio': 0.1,
