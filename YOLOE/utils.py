@@ -3,11 +3,12 @@ import cv2
 from pathlib import Path
 from typing import List
 from PIL import Image
-import open3d as o3d
+import open3d as g
 import os
 import pickle
 import json
-from typing import Union, Tuple, List, Optional
+from typing import Union, Tuple, List, Optional, Iterable, Dict, Any
+
 
 from shapely import points
 
@@ -22,6 +23,9 @@ import pickle
 import time
 import networkx as nx
 import itertools as it
+
+import gzip
+
     
 IMAGE_WIDTH = 1280
 IMAGE_HEIGHT = 720
@@ -83,6 +87,7 @@ def filter_detections_by_class(
     masks: list,
     track_ids: np.ndarray,
     class_names: list,
+    boxes = None,
     skip_classes: set = None,
     verbose: bool = False
 ) -> tuple:
@@ -100,13 +105,16 @@ def filter_detections_by_class(
     Returns:
         (filtered_masks, filtered_track_ids, filtered_class_names)
     """
+    print('rabotaet')
     if skip_classes is None:
         skip_classes = DEFAULT_SKIP_CLASSES
     else:
         skip_classes = set(c.lower() for c in skip_classes)
     
     if not skip_classes or class_names is None:
-        return masks, track_ids, class_names
+        print("1", masks)
+        print('1', boxes)
+        return masks, track_ids, class_names, boxes
     
     keep_indices = []
     for i, cls_name in enumerate(class_names):
@@ -118,17 +126,24 @@ def filter_detections_by_class(
             print(f"    [filter] Skipping: {cls_name}")
     
     if len(keep_indices) == len(class_names):
-        return masks, track_ids, class_names
+        print('2', masks)
+        print('2', boxes)
+        return masks, track_ids, class_names, boxes
     
     # Filter
     filtered_masks = [masks[i] for i in keep_indices] if masks else []
     filtered_track_ids = track_ids[keep_indices] if track_ids is not None and len(track_ids) > 0 else np.array([], dtype=np.int64)
     filtered_class_names = [class_names[i] for i in keep_indices]
-    
+    filtered_boxes = [boxes[i] for i in keep_indices] if masks else []
+
+    print('3')
+    print(filtered_boxes)
+    print(filtered_masks)
+    print(keep_inices)
     if verbose:
-        print(f"    [filter] Kept {len(keep_indices)}/{len(class_names)} detections")
+        print(f"[filter] Kept {len(keep_indices)}/{len(class_names)} detections")
     
-    return filtered_masks, filtered_track_ids, filtered_class_names
+    return filtered_masks, filtered_track_ids, filtered_class_names, filtered_boxes
 
 
 class GlobalObjectRegistry:
@@ -162,7 +177,9 @@ class GlobalObjectRegistry:
     {
         'global_id': int,
         'class_name': str or None,
+        'class_id': str
         'points_accumulated': np.ndarray,  # Full PCD for reconstruction
+        'bbox_2d'
         'bbox_3d': dict,  # Lightweight bbox for edge prediction
         'first_seen_frame': int,
         'last_seen_frame': int,
@@ -450,6 +467,7 @@ class GlobalObjectRegistry:
                 continue
             
             bbox_3d = obj.get('bbox_3d')
+            bbox_2d = obj.get('bbox_2d')
             if bbox_3d is None:
                 continue
             
@@ -462,6 +480,8 @@ class GlobalObjectRegistry:
                     'track_id': gid,
                     'yolo_track_id': -1,  # Not detected by YOLO
                     'class_name': obj.get('class_name'),
+                    'class_id': obj.get('class_id'),
+                    'bbox_2d' : bbox_2d,
                     'bbox_3d': bbox_3d,
                     'visible_current_frame': True,  # Visible by reprojection
                     'match_source': 'reprojection',
@@ -532,8 +552,10 @@ class GlobalObjectRegistry:
         for det in detections:
             yolo_id = det.get('yolo_track_id', -1)
             points = det.get('points')
+            bbox_2d = det.get("bbox_2d", {})
             bbox_3d = det.get('bbox_3d', {})
             class_name = det.get('class_name', None)
+            class_id = det.get('class_id', None)
             
             if points is None or len(points) == 0:
                 continue
@@ -606,7 +628,9 @@ class GlobalObjectRegistry:
                 self.objects[global_id] = {
                     'global_id': global_id,
                     'class_name': class_name,
+                    'class_id': class_id,
                     'points_accumulated': points.copy(),
+                    'bbox_2d' : bbox_2d,
                     'bbox_3d': bbox_3d,
                     'first_seen_frame': frame_idx,
                     'last_seen_frame': frame_idx,
@@ -634,6 +658,8 @@ class GlobalObjectRegistry:
             # Update class name if provided and not already set
             if class_name and not self.objects[global_id].get('class_name'):
                 self.objects[global_id]['class_name'] = class_name
+            if class_id and not self.objects[global_id].get('class_id'):
+                self.objects[global_id]['class_id'] = class_id
             
             # Get mask from detection if provided
             det_mask = det.get('mask', None)
@@ -641,6 +667,7 @@ class GlobalObjectRegistry:
             # Update registry
             self.objects[global_id].update({
                 'points_accumulated': merged_points,
+                'bbox_2d': bbox_2d,
                 'bbox_3d': merged_bbox,
                 'last_seen_frame': frame_idx,
                 'observation_count': self.objects[global_id].get('observation_count', 0) + 1,
@@ -661,6 +688,8 @@ class GlobalObjectRegistry:
                 'track_id': global_id,  # For compatibility with existing code
                 'yolo_track_id': yolo_id,
                 'class_name': self.objects[global_id].get('class_name'),
+                'class_id': self.objects[global_id].get('class_id'),
+                'bbox_2d': bbox_2d,
                 'bbox_3d': merged_bbox,  # Only bbox, not PCD
                 'visible_current_frame': True,
                 'match_source': match_source,
@@ -738,6 +767,7 @@ class GlobalObjectRegistry:
                 'global_id': gid,
                 'points': obj.get('points_accumulated'),
                 'class_name': obj.get('class_name'),
+                'bbox_2d': obj.get('bbox_2d'),
                 'bbox_3d': obj.get('bbox_3d'),
                 'visible_current_frame': obj.get('visible_current_frame', False),
                 'observation_count': obj.get('observation_count', 0)
@@ -864,6 +894,7 @@ def list_jpg_paths(folder: str):
 
 def load_camera_poses(traj_path: str):
     poses = []
+    print("TEEEEEEEEST")
     if not os.path.isfile(traj_path):
         print(f"[WARN][prep_frames] traj file not found: {traj_path}")
         return poses
@@ -1053,10 +1084,13 @@ def preprocess_mask(yolo_res, index, KERNEL_SIZE, alpha = 0.5, show=True, fast: 
     # --- prepare boxes info if present ---
     boxes = getattr(yolo_res, "boxes", None)
     N = 0
+    detections = []
     if boxes is not None:
         # determine number of boxes in a few common ways
         if hasattr(boxes, "xyxy"):
             bx = boxes.xyxy
+            conf_all = boxes.conf.cpu().numpy() if hasattr(boxes, 'conf') else None
+            cls_all = boxes
             try:
                 N = int(len(bx))
             except Exception:
@@ -1478,6 +1512,18 @@ def compute_3d_bboxes(points, fast_mode: bool = True):
         'obb': {'center': obb_center, 'extent': obb_extent, 'R': obb_R}
     }
 
+def compute_2d_bboxes(box):
+    if box == None:
+        return {'xyxy': [0, 0, 0, 0],
+               'center': 0,
+               'conf': 0}
+    x1, y1, x2, y2 = box.xyxyn[0]
+    center = ((x2 + x1) / 2, (y2 + y1) / 2)
+    conf = box.conf
+    return {'xyxy': [x1, y1, x2, y2],
+           'center': center,
+           'conf': conf}
+
 def create_3d_objects(track_ids, masks_clean, max_points_per_obj, depth_m, T_w_c, frame_idx, o3_nb_neighbors, o3std_ratio, accumulated_points_dict=None, max_accumulated_points=10000):
     # t_total_start = time.perf_counter()
     # timings = {
@@ -1554,7 +1600,9 @@ def create_3d_objects(track_ids, masks_clean, max_points_per_obj, depth_m, T_w_c
         # t_start = time.perf_counter()
         bbox3d = compute_3d_bboxes(pts_accumulated)
         # timings['compute_bbox'] += (time.perf_counter() - t_start) * 1000
-        
+
+        # 4. compute 2d bbox
+        bbox2d = compute_2d_bboxes(m_clean)
         # t_start = time.perf_counter()
         obj = {
             'track_id': int(t_id),
@@ -1594,7 +1642,8 @@ def create_3d_objects_with_tracking(
     o3std_ratio,
     object_registry: GlobalObjectRegistry,
     class_names: list = None,
-    skip_classes: set = None
+    skip_classes: set = None,
+    yolo_res= None
 ):
     """
     Enhanced version of create_3d_objects that uses GlobalObjectRegistry for tracking.
@@ -1625,10 +1674,9 @@ def create_3d_objects_with_tracking(
     
     # Filter out unwanted classes if class_names provided
     if class_names is not None and skip_classes is not None:
-        masks_clean, track_ids, class_names = filter_detections_by_class(
-            masks_clean, track_ids, class_names, skip_classes, verbose=False
+        masks_clean, track_ids, class_names, yolo_res = filter_detections_by_class(
+            masks_clean, track_ids, class_names, yolo_res, skip_classes, verbose=True
         )
-    
     # Step 1: Extract detections from current frame
     detections = []
     
@@ -1658,17 +1706,34 @@ def create_3d_objects_with_tracking(
         
         # Compute initial bbox (will be recomputed after merging)
         bbox_3d = compute_3d_bboxes(points_world)
-        
+
+        if yolo_res:
+            bbox_2d = compute_2d_bboxes(yolo_res[idx])
+        else:
+            bbox_2d = compute_2d_bboxes(None)
+
+            
+        #print(bbox_2d)
+        # print(yolo_res[idx].cls)
+        if yolo_res:
+            class_id = yolo_res[idx].cls[0].astype(int)
+        else:
+            class_id = -1
+
+        #print("CLASS ID", class_id)
         # Get class name if available
         class_name = None
         if class_names is not None and idx < len(class_names):
             class_name = class_names[idx]
+            print(class_name, frame_idx)
         
         detections.append({
             'yolo_track_id': int(t_id),
             'points': points_world,
             'bbox_3d': bbox_3d,
+            'bbox_2d': bbox_2d,
             'class_name': class_name,
+            'class_id': class_id,
             'mask': m_clean  # Store mask for registry-based metrics
         })
     
@@ -1763,9 +1828,9 @@ def visualize_reconstruction(
     title = f"Reconstruction - Frame {frame_index} | Visible: {summary['visible_objects']}/{summary['total_objects']}"
     vis.create_window(window_name=title, width=width, height=height, visible=True)
     
-    opt = vis.get_render_option()
-    opt.background_color = np.array([0.1, 0.1, 0.1])
-    opt.point_size = float(point_size)
+    #opt = vis.get_render_option()
+    #opt.background_color = np.array([0.1, 0.1, 0.1])
+    #opt.point_size = float(point_size)
     
     # Add coordinate frame
     coord = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1 * diag, origin=[0, 0, 0])
@@ -1817,11 +1882,11 @@ def visualize_reconstruction(
     vis.add_geometry(gbox)
     vis.poll_events()
     vis.update_renderer()
-    ctr = vis.get_view_control()
-    ctr.set_lookat(gbox.get_center())
-    ctr.set_front([-1.0, -1.0, -1.0])
-    ctr.set_up([0.0, 0.0, 1.0])
-    ctr.set_zoom(1.0)
+    #ctr = vis.get_view_control()
+    #ctr.set_lookat(gbox.get_center())
+    #ctr.set_front([-1.0, -1.0, -1.0])
+    #ctr.set_up([0.0, 0.0, 1.0])
+    #ctr.set_zoom(1.0)
     vis.remove_geometry(gbox, reset_bounding_box=False)
     
     print(f"[visualize_reconstruction] Showing {len(all_vis_data)} objects. "
@@ -1935,19 +2000,19 @@ def visualize_frame_objects_open3d(
     diag = float(np.linalg.norm(gmax - gmin)) if np.all(np.isfinite(gmax-gmin)) else 1.0
     sphere_r = max(1e-3, 0.01 * diag)
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name=f"Frame Objects (Open3D) - Frame {frame_index}", width=width, height=height, visible=True)
-    opt = vis.get_render_option()
-    opt.background_color = np.array([0.1, 0.1, 0.1])
-    opt.point_size = float(point_size)
+    #vis = o3d.visualization.Visualizer()
+    #vis.create_window(window_name=f"Frame Objects (Open3D) - Frame {frame_index}", width=width, height=height, visible=True)
     try:
+        opt = vis.get_render_option()
+        opt.background_color = np.array([0.1, 0.1, 0.1])
+        opt.point_size = float(point_size)
         opt.line_width = float(line_width)
     except Exception:
         pass
 
     # Add coordinate frame
-    coord = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1 * diag, origin=[0, 0, 0])
-    vis.add_geometry(coord)
+    #coord = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1 * diag, origin=[0, 0, 0])
+    #vis.add_geometry(coord)
 
     # Geometries accumulator for potential cleanup
     geoms = [coord]
@@ -1992,19 +2057,19 @@ def visualize_frame_objects_open3d(
                 label_pos = np.asarray(obb.get('center'), dtype=float)
 
     # Fit view to global bounds once
-    gbox = o3d.geometry.AxisAlignedBoundingBox(gmin, gmax)
-    vis.add_geometry(gbox)
-    vis.poll_events(); vis.update_renderer()
-    ctr = vis.get_view_control()
-    ctr.set_lookat(gbox.get_center())
-    ctr.set_front([-1.0, -1.0, -1.0])
-    ctr.set_up([0.0, 0.0, 1.0])
-    ctr.set_zoom(1.0)
-    vis.remove_geometry(gbox, reset_bounding_box=False)
+    #gbox = o3d.geometry.AxisAlignedBoundingBox(gmin, gmax)
+    #vis.add_geometry(gbox)
+    #vis.poll_events(); vis.update_renderer()
+    #ctr = vis.get_view_control()
+    #ctr.set_lookat(gbox.get_center())
+    #ctr.set_front([-1.0, -1.0, -1.0])
+    #ctr.set_up([0.0, 0.0, 1.0])
+    #ctr.set_zoom(1.0)
+    #vis.remove_geometry(gbox, reset_bounding_box=False)
 
     print("[visualize_frame_objects_open3d] Controls: mouse rotate, wheel zoom, right-button pan, R reset, Q quit")
-    vis.run()
-    vis.destroy_window()
+    #vis.run()
+    #vis.destroy_window()
 
 def get_track_ids(yolo_res):
     boxes = getattr(yolo_res, "boxes", None)
@@ -2335,7 +2400,6 @@ def merge_scene_graphs(persistent_graph, current_graph):
     
     return persistent_graph
 
-
 def are_conflicting_relations(class1, class2):
     """Check if two allocentric relation types are mutually exclusive"""
     conflicts = {
@@ -2344,4 +2408,130 @@ def are_conflicting_relations(class1, class2):
         'hanging': ['support', 'embedded']
     }
     return class2 in conflicts.get(class1, [])
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder: numpy, numpy scalars, bytes -> serializable."""
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (bytes, bytearray)):
+            try:
+                return obj.decode('utf-8')
+            except Exception:
+                return list(obj)
+        # fallback: try convert to str
+        try:
+            return json.JSONEncoder.default(self, obj)
+        except Exception:
+            return str(obj)
+
+def save_graphs_json(list_of_graphs: Iterable[nx.Graph],
+                     list_of_scene_names: Iterable[str],
+                     output_dir: str,
+                     compress: bool = False):
+    """
+    Save networkx graphs as node-link JSON files.
+    If compress=True, saves as .json.gz
+    """
+    """
+    Save networkx graphs as node-link JSON files using improved schema:
+      {
+        "directed": bool,
+        "multigraph": bool,
+        "graph": { "scene_name": ... },
+        "nodes": [ {"id": id, "data": {...}}, ... ],
+        "links": [ {"source":u,"target":v,"key":k,"data": {...}}, ... ]
+      }
+
+    This variant DOES NOT compute or add any 'confidence'. It just normalizes
+    labels like "aligned:1,2,3," → {"label":"aligned","aligned_ids":[1,2,3]}.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    list_of_scene_names = sorted(list_of_scene_names)
+    for G, name in zip(list_of_graphs, list_of_scene_names):
+        # safe filename
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+        filename = os.path.join(output_dir, f"{safe_name}_graph.json")
+        if compress:
+            filename = filename + ".gz"
+
+        # nodes: canonicalize under 'data'
+        nodes_out = []
+        
+        for nid, attrs in G.nodes(data=True):
+            if 'data' in attrs and isinstance(attrs['data'], dict):
+                ndata = dict(attrs['data'])
+            else:
+                # copy all node attributes into 'data'
+                ndata = dict(attrs)
+            # ensure some defaults to simplify downstream code
+            ndata.setdefault('observation_count', ndata.get('observation_count', 0))
+            ndata.setdefault('visible_current_frame', bool(ndata.get('visible_current_frame', False)))
+            nodes_out.append({"id": nid, "data": ndata})
+
+        # edges: put attributes under 'data' and normalize label strings
+        links_out = []
+        is_multi = G.is_multigraph()
+        if is_multi:
+            for u, v, key, edata in G.edges(keys=True, data=True):
+                if 'data' in edata and isinstance(edata['data'], dict):
+                    e_d = dict(edata['data'])
+                else:
+                    # copy all attributes (except networkx internals) to 'data'
+                    e_d = {k: v for k, v in edata.items()}
+                # normalize labels like "aligned:1,2,3," -> label + aligned_ids
+                label_raw = e_d.get('label', "")
+                if isinstance(label_raw, str) and label_raw.startswith('aligned:'):
+                    rest = label_raw[len('aligned:'):]
+                    ids = [int(x) for x in rest.split(',') if x.strip().isdigit()]
+                    e_d['label'] = 'aligned'
+                    e_d['aligned_ids'] = ids
+                links_out.append({
+                    "source": u,
+                    "target": v,
+                    "key": key,
+                    "data": e_d
+                })
+        else:
+            for u, v, edata in G.edges(data=True):
+                if 'data' in edata and isinstance(edata['data'], dict):
+                    e_d = dict(edata['data'])
+                else:
+                    e_d = {k: v for k, v in edata.items()}
+                label_raw = e_d.get('label', "")
+                if isinstance(label_raw, str) and label_raw.startswith('aligned:'):
+                    rest = label_raw[len('aligned:'):]
+                    ids = [int(x) for x in rest.split(',') if x.strip().isdigit()]
+                    
+                    e_d['label'] = 'aligned'
+                    e_d['aligned_ids'] = ids
+                links_out.append({
+                    "source": u,
+                    "target": v,
+                    "key": 0,
+                    "data": e_d
+                })
+
+        export_obj = {
+            "directed": G.is_directed(),
+            "multigraph": is_multi,
+            "graph": {"scene_name": name},
+            "nodes": nodes_out,
+            "links": links_out
+        }
+
+        # write file
+        if compress:
+            with gzip.open(filename, "wt", encoding="utf-8") as f:
+                json.dump(export_obj, f, indent=2, cls=NumpyEncoder, ensure_ascii=False)
+        else:
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(export_obj, f, indent=2, cls=NumpyEncoder, ensure_ascii=False)
+
+        print(f"Saved: {filename}")
 
