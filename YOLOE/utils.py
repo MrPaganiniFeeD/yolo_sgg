@@ -2449,8 +2449,6 @@ def save_graphs_json(list_of_graphs: Iterable[nx.Graph],
         "links": [ {"source":u,"target":v,"key":k,"data": {...}}, ... ]
       }
 
-    This variant DOES NOT compute or add any 'confidence'. It just normalizes
-    labels like "aligned:1,2,3," → {"label":"aligned","aligned_ids":[1,2,3]}.
     """
     os.makedirs(output_dir, exist_ok=True)
     list_of_scene_names = sorted(list_of_scene_names)
@@ -2475,7 +2473,6 @@ def save_graphs_json(list_of_graphs: Iterable[nx.Graph],
             ndata.setdefault('visible_current_frame', bool(ndata.get('visible_current_frame', False)))
             nodes_out.append({"id": nid, "data": ndata})
 
-        # edges: put attributes under 'data' and normalize label strings
         links_out = []
         is_multi = G.is_multigraph()
         if is_multi:
@@ -2483,9 +2480,7 @@ def save_graphs_json(list_of_graphs: Iterable[nx.Graph],
                 if 'data' in edata and isinstance(edata['data'], dict):
                     e_d = dict(edata['data'])
                 else:
-                    # copy all attributes (except networkx internals) to 'data'
                     e_d = {k: v for k, v in edata.items()}
-                # normalize labels like "aligned:1,2,3," -> label + aligned_ids
                 label_raw = e_d.get('label_class', "")
                 if label_raw == "proximity":
                     links_out.append({
