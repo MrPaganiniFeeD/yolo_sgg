@@ -16,3 +16,5 @@ runs/
 *.csv
 thud/
 .venv
+data
+graphs

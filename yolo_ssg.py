@@ -264,16 +264,16 @@ def main(cfg):
 
 if __name__ == "__main__":
     cfg = OmegaConf.create({
-        'rgb_dir': "/home/amelekhin96/pinkin_ek/data/sber/map8/zedx_front_left/rgb",
-        'depth_dir': "/home/amelekhin96/pinkin_ek/data/sber_depth_resized/map8",
-        'traj_path': "/home/amelekhin96/pinkin_ek/data/sber/map8/traj.txt",
-        'yolo_model': "/home/amelekhin96/pinkin_ek/yolo_ssgg/yoloe-11l-seg-pf.pt",
-        'graph_path': "/home/amelekhin96/pinkin_ek/data/sber/map8/graphs",
+        'rgb_dir': r"C:\Users\Egor\VsCode project\yolo_sgg\data\map1_img",
+        'depth_dir': r"C:\Users\Egor\VsCode project\yolo_sgg\data\map1_depth",
+        'traj_path': r"C:\Users\Egor\VsCode project\yolo_sgg\data\traj.txt",
+        'yolo_model': r"C:\Users\Egor\VsCode project\yolo_sgg\models\yoloe-11l-seg-pf.pt",
+        'graph_path': r"C:\Users\Egor\VsCode project\yolo_sgg\graphs",
         'conf': 0.2,
         'iou': 0.5,
         'kernel_size': 17,
         'alpha': 0.7,
-        'max_points_per_obj': 2000,
+        'max_points_per_obj': 6000,
         'max_accumulated_points': 10000,
         'show_pcds': False,
         'fast_mask': True,

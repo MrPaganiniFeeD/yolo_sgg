@@ -1056,14 +1056,15 @@ def track_objects_in_video_stream(rgb_dir_path, depth_path_list,
             print(f"[WARN][prep_frames] Could not read image: {rgb_p}")
             continue
         
-        out = model.track(
+        out = model.predict(
             source=[rgb],
-            tracker=TRACKER_CFG,
-            device=DEVICE,
+            device="cpu",
             conf=conf,
             verbose=False,
-            persist=True,
-            agnostic_nms=True
+#            persist=True,
+            agnostic_nms=True,
+            save=True,
+            project=r"C:\Users\Egor\VsCode project\yolo_sgg\data"
         )
          
         res = out[0] if isinstance(out, (list, tuple)) and len(out) > 0 else out        
@@ -2485,37 +2486,34 @@ def save_graphs_json(list_of_graphs: Iterable[nx.Graph],
                     # copy all attributes (except networkx internals) to 'data'
                     e_d = {k: v for k, v in edata.items()}
                 # normalize labels like "aligned:1,2,3," -> label + aligned_ids
-                label_raw = e_d.get('label', "")
-                if isinstance(label_raw, str) and label_raw.startswith('aligned:'):
-                    rest = label_raw[len('aligned:'):]
-                    ids = [int(x) for x in rest.split(',') if x.strip().isdigit()]
-                    e_d['label'] = 'aligned'
-                    e_d['aligned_ids'] = ids
-                links_out.append({
-                    "source": u,
-                    "target": v,
-                    "key": key,
-                    "data": e_d
-                })
+                label_raw = e_d.get('label_class', "")
+                if label_raw == "proximity":
+                    links_out.append({
+                        "source": u,
+                        "target": v,
+                        "key": key,
+                        "data": e_d
+                    })
         else:
             for u, v, edata in G.edges(data=True):
                 if 'data' in edata and isinstance(edata['data'], dict):
                     e_d = dict(edata['data'])
                 else:
                     e_d = {k: v for k, v in edata.items()}
-                label_raw = e_d.get('label', "")
+                label_raw = e_d.get('label_class', "")
+                if label_raw == "proximity":
+                    links_out.append({
+                    "source": u,
+                    "target": v,
+                    "data": e_d
+                    })
+
                 if isinstance(label_raw, str) and label_raw.startswith('aligned:'):
                     rest = label_raw[len('aligned:'):]
                     ids = [int(x) for x in rest.split(',') if x.strip().isdigit()]
                     
                     e_d['label'] = 'aligned'
                     e_d['aligned_ids'] = ids
-                links_out.append({
-                    "source": u,
-                    "target": v,
-                    "key": 0,
-                    "data": e_d
-                })
 
         export_obj = {
             "directed": G.is_directed(),
